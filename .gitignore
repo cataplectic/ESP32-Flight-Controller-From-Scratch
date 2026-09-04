@@ -1,0 +1,16 @@
+# Arduino / PlatformIO
+build/
+.pio/
+*.bin
+*.elf
+*.hex
+
+# Isletim sistemi
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+*.swp
