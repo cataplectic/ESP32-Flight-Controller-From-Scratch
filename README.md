@@ -31,13 +31,15 @@ ama gerçek bir platformda uygulamaktır.
 | Ölçüt | Değer |
 |---|---|
 | Kontrol döngüsü | 250 Hz sabit periyot |
+| Motor darbe hızı | 50 Hz (RMT çevre birimi) |
 | Telsiz çerçeve hızı | 50 Hz, 10 baytlık çerçeve, 250 kbps |
 | Statik açı sapması (roll/pitch, 3 dk) | < 0.1° |
 | Yaw açısal sürüklenmesi | 0.1°/dk |
 | Failsafe tepki süresi | < 500 ms |
 | Kanal merkez kararlılığı | 0 µs titreşim |
 | Zamanlama bütçesi kullanımı | ~%30 (yaklaşık %70 rezerv) |
-| Yazılım hacmi | ~560 satır C++ / 4 modül |
+| Yazılım hacmi | ~900 satır C++ / 4 modül + 3 tanı kodu |
+| Paket kaybı (masa üstü) | 0 / saniyede 50 çerçeve |
 | Belgelenen tehlike (FMEA) | 12 arıza modu, azaltım önlemleriyle |
 
 ---
@@ -51,13 +53,18 @@ ama gerçek bir platformda uygulamaktır.
 | Atalet ölçüm birimi | ✅ Tamamlandı | Roll/pitch drift < 0.1°, yaw 0.1°/dk |
 | Emniyet mantığı (failsafe) | ✅ Tamamlandı | 500 ms içinde gaz kesme, doğrulandı |
 | Güç dağıtımı ve tahrik | ✅ Tamamlandı | Süreklilik + kutup testi, 4 motor yön doğrulaması |
-| Kontrol yasası (PID) | 🟡 Gerçeklendi / kazanç ayarı sürüyor | Kod hazır, kazançlar ayarlanıyor |
-| İlk kalkış | 🟡 Gerçekleşti | Araç havalanıyor, henüz stabil değil |
-| Kararlı uçuş | ⚪ Devam ediyor | Ön koşul: işaret doğrulaması + kazanç ayarı |
+| İşaret doğrulaması | ✅ Tamamlandı | Dört eksen de doğru yönde düzeltiyor |
+| Motor sürüş katmanı (RMT) | ✅ Tamamlandı | 50 Hz darbe, ESC'ler senkron, 0 paket kaybı |
+| Kontrol yasası (PID) | 🟡 Kazanç ayarı sürüyor | Roll/pitch 1.20/0/3.00, yaw 0.50/0/0 |
+| İlk kalkış | 🟡 Gerçekleşti | Araç havalanıyor |
+| Kararlı uçuş | ⚪ Parça bekliyor | Pervane civatası eğri — mekanik titreşim kaynağı |
 
-> **Not:** PID kazançları depoda bilinçli olarak **sıfırdır**. Kod bu hâliyle
-> güvenli çalışır — motorlar yalnızca gaz komutunu izler, düzeltme uygulanmaz.
-> Ayar prosedürü için `docs/01_Sistem_Tasarim_Dokumani.pdf` Bölüm 8.3'e bakınız.
+> **Not:** Depodaki PID kazançları **ayar için başlangıç değerleridir ve henüz
+> doğrulanmamıştır** (roll/pitch 1.20 / 0 / 8.0, yaw 2.00 / 0 / 0).
+> Bu kodla yapılacak ilk iş **işaret doğrulamasıdır**: pervaneler sökülü,
+> şasi sabit, gaz ~1200; aracı elle eğip motor komutlarının doğru yönde
+> arttığı seri porttan kontrol edilir. Ayar prosedürü için
+> `docs/01_Sistem_Tasarim_Dokumani.pdf` Bölüm 8.3'e bakınız.
 
 ---
 
@@ -136,10 +143,14 @@ Dört analog eksenin ADC1'e (GPIO 32–35) yerleştirilmesi zorunludur, çünkü
 | 4 / 5 | nRF24 CE / CSN | GPIO |
 | 18 / 19 / 23 | SCK / MISO / MOSI | VSPI |
 | 21 / 22 | SDA / SCL (MPU6050) | I²C @ 400 kHz |
-| 12 | Motor 1 — ön-sağ (CW) | LEDC PWM |
-| 13 | Motor 2 — arka-sağ (CCW) | LEDC PWM |
-| 14 | Motor 3 — arka-sol (CW) | LEDC PWM |
-| 27 | Motor 4 — ön-sol (CCW) | LEDC PWM |
+| 25 | Motor 1 — ön-sağ (CW) | RMT |
+| 26 | Motor 2 — arka-sağ (CCW) | RMT |
+| 32 | Motor 3 — arka-sol (CW) | RMT |
+| 33 | Motor 4 — ön-sol (CCW) | RMT |
+
+> **Pinler v4.1'de taşındı.** Eski değerler 12/13/14/27 idi. GPIO 12 bir
+> strapping pini (MTDI), 13 ve 14 ise HSPI/JTAG hatları. Bu pinlerde PWM
+> üretilirken telsizde paket kaybı ölçüldü.
 
 ### Motor yerleşimi (X konfigürasyonu, üstten bakış)
 
@@ -192,8 +203,10 @@ M4 = gaz + u_roll − u_pitch + u_yaw     (ön-sol,   CCW)
 |---|---|---|
 | RF24 | **TMRh20** | Aynı adla başka paketler var, yalnızca bu uyumlu |
 | MPU6050_light | **rfetick** | — |
-| ESP32Servo | K. Harrington, J. Bennett | AVR `Servo` kütüphanesi ESP32'de derlenmez |
 | Wire, SPI | çekirdek | — |
+
+> **ESP32Servo kullanılmıyor.** PWM üretimi doğrudan ESP32'nin RMT çevre
+> birimiyle yapılıyor; ek kütüphane gerekmez. Gerekçe aşağıda.
 
 ---
 
@@ -283,10 +296,14 @@ doğrudan tehlikeye dönüşmesi demektir.
 │   ├── 02_Yazilim_Dokumantasyonu.pdf      SWD-QC-002
 │   └── 03_CV_Eki_Proje_Ozeti.pdf          PRJ-QC-003
 └── kod/
-    ├── verici_v2_kumanda.ino              el kumandası (v2.1, kalıcı)
-    ├── alici_v3_ucus_kontrol.ino          uçuş kontrolcüsü (v3.0, kalıcı)
-    ├── arac_esc_kalibrasyon.ino           ESC uç nokta kalibrasyonu
-    └── arac_motor_test.ino                motor yön doğrulaması
+    ├── verici_v2_kumanda.ino              el kumandası (v2.4, kalıcı)
+    ├── alici_v3_ucus_kontrol.ino          uçuş kontrolcüsü (v6.0, kalıcı)
+    ├── arac_esc_kalibrasyon.ino           ESC kalibrasyonu (v3.0, RMT)
+    ├── arac_motor_test.ino                motor yön doğrulaması
+    └── test/                              tanı kodları
+        ├── test_telsiz_verici.ino         minimal telsiz testi (TX)
+        ├── test_telsiz_alici.ino          minimal telsiz testi (RX)
+        └── tani_alici_motorsuz.ino        PWM izolasyon testi
 ```
 
 ---
@@ -337,6 +354,22 @@ Ayrıntılı kayıtlar (D-01…D-06) `docs/01_Sistem_Tasarim_Dokumani.pdf` Böl�
   belirgin artırır; veri yükü zaten çok düşüktür.
 - **Geri döndürülemez adımlar doğrulamadan sonraya bırakılır.** Motor kabloları,
   dönüş yönü geçici bağlantıyla doğrulanana kadar lehimlenmedi.
+- **İki çevre birimi görünürde ilgisizken birbirini bozabilir.** PWM üretimi
+  için kullanılan LEDC birimi, telsizin SPI hattında %60 paket kaybına yol
+  açtı. Teşhis sistematik elemeyle yapıldı: önce minimal test kodu (yalnızca
+  telsiz → %100 başarı), sonra tek tek değişken kapatma. Suçlu bulununca üç
+  frekans/çözünürlük kombinasyonu denendi; hiçbiri hem ESC senkronunu hem
+  telsiz temizliğini sağlamadı. Çözüm LEDC'yi tümüyle bırakıp **RMT** çevre
+  birimine geçmek oldu. *Bir bileşen çalışıyor görünüyorsa bile, komşusunu
+  bozup bozmadığını ölçmek gerekir.*
+- **Sensör gürültüsünü türetmek felakettir.** D terimi başlangıçta açının
+  sayısal türeviydi. dt = 4 ms olduğu için 0.1°'lik sensör gürültüsü 25 °/s
+  gibi görünüyor, Kd ile çarpılınca 200 µs'lik sahte düzeltme üretiyordu —
+  araç hareketsizken motorlar 1100–1438 arasında savruluyordu. Çözüm: türevi
+  hesaplamak yerine jiroskopun **zaten ölçtüğü** açısal hızı kullanmak.
+- **Mekanik sorunu yazılımla örtme.** Orta gazda başlayan titreşimin kaynağı
+  eğri bir pervane civatasıydı. Yazılım filtresi belirtiyi azaltır ama sebebi
+  ortadan kaldırmaz.
 
 ---
 
@@ -347,7 +380,7 @@ Ayrıntılı kayıtlar (D-01…D-06) `docs/01_Sistem_Tasarim_Dokumani.pdf` Böl�
 - [x] Kablo yönetimi, kart montajı, IMU'nun titreşim yalıtımlı bağlanması
 - [x] Ağırlık merkezi dengeleme ve batarya konumlandırma
 - [ ] Test standı imalatı (tek eksen serbestlik)
-- [ ] Karıştırma işaret doğrulaması
+- [x] Karıştırma işaret doğrulaması
 - [ ] Roll / pitch kazanç ayarı
 - [ ] Yaw kazanç ayarı
 - [ ] Kararlı uçuş kabul testi
